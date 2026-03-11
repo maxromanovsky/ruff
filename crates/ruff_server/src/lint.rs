@@ -18,7 +18,7 @@ use ruff_linter::{
     generate_noqa_edits,
     linter::check_path,
     package::PackageRoot,
-    packaging::detect_package_root,
+    packaging::{detect_package_root, is_package},
     settings::flags,
     source_kind::SourceKind,
     suppression::Suppressions,
@@ -85,13 +85,29 @@ pub(crate) fn check(
 
     let file_path = query.file_path();
     let package = if let Some(file_path) = &file_path {
+        let namespace_packages = &settings.linter.namespace_packages;
         detect_package_root(
             file_path
                 .parent()
                 .expect("a path to a document should have a parent path"),
-            &settings.linter.namespace_packages,
+            namespace_packages,
         )
-        .map(PackageRoot::root)
+        .map(|root| {
+            // Check if the package root is itself nested under another package. This
+            // happens when a directory with `__init__.py` exists above the root but
+            // separated from it by a directory without `__init__.py` (an implicit
+            // namespace package). In that case, the INP001 rule requires
+            // `PackageRoot::Nested` to fire correctly.
+            let is_nested = root
+                .ancestors()
+                .skip(1) // skip the root itself
+                .any(|ancestor| is_package(ancestor, namespace_packages));
+            if is_nested {
+                PackageRoot::nested(root)
+            } else {
+                PackageRoot::root(root)
+            }
+        })
     } else {
         None
     };
