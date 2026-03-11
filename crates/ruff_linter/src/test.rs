@@ -132,6 +132,53 @@ pub(crate) fn test_path(
     Ok(test_contents(&source_kind, &path, settings).0)
 }
 
+/// Like [`test_path`], but allows specifying an explicit [`PackageRoot`] instead of
+/// auto-detecting it. This is useful for testing rules that distinguish between
+/// [`PackageRoot::Root`] and [`PackageRoot::Nested`], such as
+/// [`crate::rules::flake8_no_pep420`].
+#[cfg(not(fuzzing))]
+pub(crate) fn test_path_with_package(
+    path: impl AsRef<Path>,
+    package: Option<PackageRoot<'_>>,
+    settings: &LinterSettings,
+) -> Result<Vec<Diagnostic>> {
+    let path = test_resource_path("fixtures").join(path);
+    let py_source_type = PySourceType::from(&path);
+    let source_kind = SourceKind::from_path(path.as_ref(), SourceType::Python(py_source_type))?
+        .expect("valid source");
+    let target_version = settings.resolve_target_version(&path);
+    let options =
+        ParseOptions::from(py_source_type).with_target_version(target_version.parser_version());
+    let parsed = ruff_python_parser::parse_unchecked(source_kind.source_code(), options)
+        .try_into_module()
+        .expect("PySourceType always parses into a module");
+    let locator = Locator::new(source_kind.source_code());
+    let stylist = Stylist::from_tokens(parsed.tokens(), locator.contents());
+    let indexer = Indexer::from_tokens(parsed.tokens(), locator.contents());
+    let directives = directives::extract_directives(
+        parsed.tokens(),
+        directives::Flags::from_settings(settings),
+        &locator,
+        &indexer,
+    );
+    let suppressions = Suppressions::from_tokens(locator.contents(), parsed.tokens(), &indexer);
+    Ok(check_path(
+        &path,
+        package,
+        &locator,
+        &stylist,
+        &indexer,
+        &directives,
+        settings,
+        flags::Noqa::Enabled,
+        &source_kind,
+        py_source_type,
+        &parsed,
+        target_version,
+        &suppressions,
+    ))
+}
+
 /// Test a file with two different settings and return the differences
 #[cfg(not(fuzzing))]
 pub(crate) fn test_path_with_settings_diff(
